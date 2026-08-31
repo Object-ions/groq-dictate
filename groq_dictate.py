@@ -5,8 +5,10 @@
 """
 groq-dictate — push-to-talk speech-to-text for macOS, powered by Groq Whisper.
 
-Hold the record key, speak, release. The audio is sent to Groq, transcribed,
-and pasted straight into whatever text field is focused (browser, editor, chat).
+Long-press the ` / ~ key (top-left, below Esc), speak, release. The audio is
+sent to Groq, transcribed, and pasted straight into whatever text field is
+focused (browser, editor, chat). A quick tap of the key still types ` or ~
+as normal — only a hold longer than LONG_PRESS_SECS triggers recording.
 
 Run with uv (recommended):   uv run groq_dictate.py
 Or inside a venv:            python groq_dictate.py
@@ -22,15 +24,21 @@ import time
 import numpy as np
 import pyperclip
 import sounddevice as sd
+import Quartz
 from scipy.io import wavfile
 from pynput import keyboard
 from groq import Groq
 
 # ============================ CONFIG ============================
-# The push-to-talk key. Key.alt = the Option key (either side).
-# If holding it does nothing, run keyprobe.py to see what your key
-# reports as, then set it here (e.g. keyboard.Key.alt_r, Key.ctrl_r).
-RECORD_KEY = keyboard.Key.alt
+# The push-to-talk key, as a macOS virtual keycode. 50 = the physical
+# ` / ~ key on ANSI (US) keyboards. Hold it (with or without Shift) to
+# record; a quick tap types the character as usual.
+# Run keyprobe.py if you want to find another key's code.
+RECORD_KEYCODE = 50
+
+# Hold at least this long to start dictation; shorter presses are
+# treated as normal typing of ` / ~.
+LONG_PRESS_SECS = 0.35
 
 # Groq model. "whisper-large-v3-turbo" is fast + multilingual.
 # Use "whisper-large-v3" for slightly higher accuracy at lower speed.
@@ -71,19 +79,22 @@ _lock = threading.Lock()
 
 def start_recording():
     global _stream, _frames, _recording
-    _frames = []
-    _recording = True
-    _stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="int16",
-        callback=lambda indata, *_: _frames.append(indata.copy()),
-    )
-    _stream.start()
-    print("\u25cf recording\u2026", flush=True)
+    with _lock:
+        if _recording:
+            return
+        _frames = []
+        _recording = True
+        _stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype="int16",
+            callback=lambda indata, *_: _frames.append(indata.copy()),
+        )
+        _stream.start()
+    print("● recording…", flush=True)
 
 
-def stop_and_transcribe():
+def _close_stream():
     global _stream, _recording
     _recording = False
     if _stream is not None:
@@ -91,15 +102,24 @@ def stop_and_transcribe():
         _stream.close()
         _stream = None
 
-    if not _frames:
-        print("(no audio captured \u2014 hold the key a beat longer)", flush=True)
-        return
 
-    audio = np.concatenate(_frames, axis=0)
+def cancel_recording():
+    """Short tap: throw the audio away without calling the API."""
+    with _lock:
+        _close_stream()
+
+
+def stop_and_transcribe():
+    with _lock:
+        _close_stream()
+
+        if not _frames:
+            print("(no audio captured — hold the key a beat longer)", flush=True)
+            return
+        audio = np.concatenate(_frames, axis=0)
 
     # Drop stray taps / silence before hitting the API.
-    # A quick double-tap of Option captures a sub-second, near-silent clip,
-    # and Whisper hallucinates "Thank you." on empty audio - so skip those.
+    # Near-silent sub-second clips make Whisper hallucinate "Thank you."
     duration = len(audio) / SAMPLE_RATE
     rms = float(np.sqrt(np.mean(np.square(audio.astype(np.float64)))))
     if duration < 0.4 or rms < 50:
@@ -110,7 +130,7 @@ def stop_and_transcribe():
         path = tmp.name
     wavfile.write(path, SAMPLE_RATE, audio)
 
-    print("\u2026 transcribing", flush=True)
+    print("… transcribing", flush=True)
     kwargs = dict(
         file=(os.path.basename(path), open(path, "rb").read()),
         model=MODEL,
@@ -133,7 +153,7 @@ def stop_and_transcribe():
         return
 
     pyperclip.copy(text)
-    print(f"\u2192 {text}\n", flush=True)
+    print(f"→ {text}\n", flush=True)
 
     if AUTO_PASTE:
         time.sleep(0.05)
@@ -143,16 +163,65 @@ def stop_and_transcribe():
             kb.release("v")
 
 
-def on_press(key):
-    with _lock:
-        if key == RECORD_KEY and not _recording:
-            start_recording()
+# ---------------- long-press key interception (macOS) ----------------
+# We tap the record key at the CGEvent level so that while it is held
+# nothing is typed into the focused app. On a quick tap we replay the
+# original key-down/key-up so ` / ~ types exactly as it would have.
+
+_press_time = 0.0
+_key_held = False
+_pending = []      # copied CGEvents to replay on a short tap
+_replaying = False
 
 
-def on_release(key):
-    with _lock:
-        if key == RECORD_KEY and _recording:
-            stop_and_transcribe()
+def _replay(events):
+    global _replaying
+    _replaying = True
+    try:
+        for ev in events:
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, ev)
+        time.sleep(0.01)
+    finally:
+        _replaying = False
+
+
+def _intercept(event_type, event):
+    global _press_time, _key_held, _pending
+    if event_type not in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
+        return event
+    if _replaying:
+        return event
+    keycode = Quartz.CGEventGetIntegerValueField(
+        event, Quartz.kCGKeyboardEventKeycode
+    )
+    if keycode != RECORD_KEYCODE:
+        return event
+
+    if event_type == Quartz.kCGEventKeyDown:
+        if Quartz.CGEventGetIntegerValueField(
+            event, Quartz.kCGKeyboardEventAutorepeat
+        ):
+            return None  # swallow auto-repeat while holding
+        if not _key_held:
+            _key_held = True
+            _press_time = time.monotonic()
+            _pending = [Quartz.CGEventCreateCopy(event)]
+            threading.Thread(target=start_recording, daemon=True).start()
+        return None
+
+    # key up
+    if not _key_held:
+        return event
+    _key_held = False
+    if time.monotonic() - _press_time >= LONG_PRESS_SECS:
+        _pending = []
+        threading.Thread(target=stop_and_transcribe, daemon=True).start()
+    else:
+        events = _pending + [Quartz.CGEventCreateCopy(event)]
+        _pending = []
+        threading.Thread(target=cancel_recording, daemon=True).start()
+        threading.Thread(target=_replay, args=(events,), daemon=True).start()
+    return None
 
 
 def main():
@@ -163,10 +232,11 @@ def main():
             "or write it to ~/.groq-dictate/key"
         )
     print(
-        f"Ready. Hold {RECORD_KEY} to record, release to transcribe. Ctrl-C to quit.",
+        "Ready. Long-press the ` / ~ key to record, release to transcribe. "
+        "A quick tap types the character as usual. Ctrl-C to quit.",
         flush=True,
     )
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+    with keyboard.Listener(darwin_intercept=_intercept) as listener:
         listener.join()
 
 

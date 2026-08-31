@@ -3,7 +3,8 @@
 **Hold a key, talk, and your words get typed wherever your cursor is.**
 
 groq-dictate is a tiny push-to-talk dictation tool for the Mac. You hold down a
-key (the **Option** key by default), speak a sentence, and let go. Your speech is
+key (the **` / ~** key by default — a quick tap still types the character), speak
+a sentence, and let go. Your speech is
 sent to [Groq](https://groq.com)'s super-fast Whisper service, turned into text,
 and typed straight into whatever field you're focused on — a browser search box,
 an email, a chat message, a code editor, anywhere you can type.
@@ -231,7 +232,7 @@ instantly.
 When it's ready, you'll see this line:
 
 ```
-Ready. Hold Key.alt to record, release to transcribe. Ctrl-C to quit.
+Ready. Long-press the ` / ~ key to record, release to transcribe. A quick tap types the character as usual. Ctrl-C to quit.
 ```
 
 That means it's listening. **Leave this Terminal window open while you use the
@@ -257,7 +258,7 @@ Applications → Utilities → Terminal).
 
 | Permission | Where to find it | What it's for | Symptom if it's missing |
 |---|---|---|---|
-| **Input Monitoring** | Privacy & Security → **Input Monitoring** | Lets the tool notice when you press and hold the Option key | Holding Option does **nothing** |
+| **Input Monitoring** | Privacy & Security → **Input Monitoring** | Lets the tool notice when you press and hold the record key | Holding the key does **nothing** |
 | **Microphone** | Privacy & Security → **Microphone** | Lets the tool record your voice | You get **`(no audio captured)`** or empty text |
 | **Accessibility** | Privacy & Security → **Accessibility** | Lets the tool auto-type the text into your field | Text appears in **Terminal** but not in your field |
 
@@ -289,9 +290,10 @@ microphone access — click **Allow** / **OK**.
 
 1. Click into any text field — a browser address bar, an email, a notes app,
    anywhere you can type.
-2. **Press and hold the Option key.** You'll see `● recording…` in the Terminal.
+2. **Press and hold the ` / ~ key** (top-left, below Esc). You'll see
+   `● recording…` in the Terminal.
 3. **Speak your sentence.**
-4. **Let go** of the Option key. After a moment your words appear right where your
+4. **Let go** of the key. After a moment your words appear right where your
    cursor is. 🎉
 
 > **Pro tip:** hold the key for a brief moment **before** you start talking, so
@@ -334,7 +336,8 @@ see these settings:
 
 | Setting | What it does |
 |---|---|
-| **`RECORD_KEY`** | The push-to-talk key you hold to record. Default is `keyboard.Key.alt` (the **Option** key). To use a different key, see the [Troubleshooting](#troubleshooting) tip about `keyprobe.py`. |
+| **`RECORD_KEYCODE`** | The push-to-talk key you long-press to record, as a macOS keycode. Default is `50` (the **` / ~** key). To use a different key, see the [Troubleshooting](#troubleshooting) tip about `keyprobe.py`. |
+| **`LONG_PRESS_SECS`** | How long you must hold the key before it counts as recording instead of typing. Default `0.35` seconds. |
 | **`MODEL`** | Which Groq Whisper model to use. Default `whisper-large-v3-turbo` is fast and multilingual. Switch to `whisper-large-v3` for slightly higher accuracy (a bit slower). |
 | **`LANGUAGE`** | Leave as `None` to **auto-detect** the language (great if you switch between, say, English and Hebrew). Or pin it to a code like `"en"` (English) or `"he"` (Hebrew) for a little more accuracy and speed. |
 | **`AUTO_PASTE`** | `True` = the tool types the text into your field for you (needs the Accessibility permission). `False` = it only copies the text to your clipboard, and you paste it yourself with **Cmd + V**. |
@@ -368,18 +371,17 @@ comfortable with it.
 The tool isn't allowed to watch your keyboard. Grant **Input Monitoring** to your
 terminal app (Step 8), then **Cmd + Q** to fully quit Terminal and reopen it.
 
-**Holding the Option key does nothing (but permissions are granted).**
-Your keyboard might report the key differently. Find out exactly what your key
-reports as: from the project folder, run
+**Holding the ` / ~ key does nothing (but permissions are granted).**
+Your keyboard might report the key differently (non-US layouts put ` / ~
+elsewhere). Find your key's code: from the project folder, run
 
 ```bash
 uv run keyprobe.py
 ```
 
-Press the key you want to use; it prints something like `Key.alt`, `Key.alt_r`,
-or `Key.ctrl_r`. Press **Esc** to quit. Then open `groq_dictate.py` and set
-`RECORD_KEY` to whatever it printed (for example,
-`RECORD_KEY = keyboard.Key.alt_r`). Save, then restart the tool.
+Press the key you want to use; it prints something like `keycode 50`. Press
+**Esc** to quit. Then open `groq_dictate.py` and set `RECORD_KEYCODE` to that
+number. Save, then restart the tool.
 
 **The text appears in the Terminal window but not in my actual field.**
 The tool transcribed you fine, but it's not allowed to type for you. Grant
