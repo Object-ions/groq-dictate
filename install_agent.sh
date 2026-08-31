@@ -6,6 +6,15 @@
 #
 # Run from inside the repo folder:  bash install_agent.sh
 #
+# Why this script is built the way it is: macOS ties the Input Monitoring,
+# Accessibility, and Microphone permissions to the EXACT python binary, and
+# silently revokes them if that binary ever changes. Homebrew replaces its
+# python on every upgrade, which used to break this tool out of nowhere.
+# So we use a uv-managed Python (Homebrew never touches it) and COPY it into
+# the venv instead of symlinking, so the binary you grant permissions to
+# never changes after install. Re-running this script keeps the existing
+# binary (and your grants) intact; only the script and dependencies update.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,6 +25,7 @@ SCRIPT_DST="$AGENT_DIR/groq_dictate.py"
 LABEL="com.groqdictate.agent"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 UID_NUM="$(id -u)"
+PYTHON_VERSION="3.12"
 
 command -v uv >/dev/null 2>&1 || { echo "!! uv is required. Install: https://docs.astral.sh/uv/"; exit 1; }
 
@@ -39,11 +49,20 @@ fi
 cp "$SCRIPT_DIR/groq_dictate.py" "$SCRIPT_DST"
 echo "==> Copied script to $SCRIPT_DST"
 
-# --- permanent venv (fixed path so macOS permissions stick) ---
-echo "==> Building venv at $VENV"
-uv venv "$VENV" --python 3.12
+# --- permission-stable venv: uv-managed Python, copied into place ---
+NEED_GRANTS=0
+if [ -x "$PY" ] && [ ! -L "$PY" ]; then
+  echo "==> Existing permission-stable venv found; keeping its python binary."
+else
+  echo "==> Building venv at $VENV (uv-managed Python, copied binary)"
+  rm -rf "$VENV"
+  uv python install "$PYTHON_VERSION"
+  UV_PY="$(UV_PYTHON_PREFERENCE=only-managed uv python find "$PYTHON_VERSION")"
+  "$UV_PY" -m venv --copies "$VENV"
+  NEED_GRANTS=1
+fi
 echo "==> Installing dependencies"
-uv pip install --python "$PY" -r "$SCRIPT_DIR/requirements.txt"
+uv pip install --quiet --python "$PY" -r "$SCRIPT_DIR/requirements.txt"
 
 # --- LaunchAgent plist ---
 echo "==> Writing $PLIST"
@@ -80,19 +99,27 @@ echo "==> Loading agent"
 launchctl bootout "gui/${UID_NUM}/${LABEL}" 2>/dev/null || true
 launchctl bootstrap "gui/${UID_NUM}" "$PLIST"
 
+if [ "$NEED_GRANTS" = "1" ]; then
 cat <<DONE
 
 ============================================================
  Agent loaded. It will start at every login.
 
- Now grant permissions to THIS binary:
+ Now grant permissions to THIS binary (a fresh one was just
+ installed, so any previous python entries are stale —
+ remove them first, then add this):
      $PY
 
    1. System Settings > Privacy & Security > Input Monitoring
    2. System Settings > Privacy & Security > Accessibility
       (Accessibility is only needed if AUTO_PASTE = True)
    Add the binary above to BOTH lists and toggle it on.
-   Tip: run  open $VENV/bin/  and drag 'python' into each list.
+   In the file picker, press Shift+Cmd+G and paste the path.
+   3. Microphone: macOS will pop up an Allow prompt the first
+      time you record — click Allow.
+
+ This binary is private to groq-dictate and never changes,
+ so these grants survive Homebrew/system package upgrades.
 
  Then restart the agent:
      launchctl kickstart -k gui/${UID_NUM}/${LABEL}
@@ -105,3 +132,16 @@ cat <<DONE
      rm $PLIST
 ============================================================
 DONE
+else
+cat <<DONE
+
+============================================================
+ Agent updated and reloaded (script + dependencies).
+ The python binary was kept, so your existing permission
+ grants still apply — no System Settings work needed.
+
+ Watch it:
+     tail -f $AGENT_DIR/agent.log $AGENT_DIR/agent.err
+============================================================
+DONE
+fi

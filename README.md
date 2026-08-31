@@ -363,6 +363,15 @@ binary buried inside a hidden folder. The installer prints the exact path and
 instructions when it finishes, but it's fiddly. Only go down this road if you're
 comfortable with it.
 
+**The good news: you only do it once.** The installer sets up a private Python
+just for this tool (a *uv-managed* Python, copied — not symlinked — into
+`~/.groq-dictate/venv`). Because that binary never changes, your permission
+grants survive Homebrew upgrades, `uv` upgrades, and system package updates.
+(Earlier versions of this installer pointed at Homebrew's Python, and every
+`brew upgrade` silently revoked the permissions — that's fixed.) Re-running
+`bash install_agent.sh` later, e.g. after pulling an updated script, keeps the
+binary and your grants intact and only refreshes the script and dependencies.
+
 ---
 
 ## Troubleshooting
@@ -388,6 +397,15 @@ The tool transcribed you fine, but it's not allowed to type for you. Grant
 **Accessibility** to your terminal app (Step 8), then Cmd + Q and reopen. (Or set
 `AUTO_PASTE = False` and paste manually with Cmd + V — the text is already on your
 clipboard.)
+
+**The background agent stopped working out of nowhere (worked fine before).**
+If you installed the background agent with an older version of
+`install_agent.sh`, it used Homebrew's Python — and every `brew upgrade`
+replaced that binary, which makes macOS silently revoke the permissions.
+Fix it for good: pull the latest repo, run `bash install_agent.sh` again
+(it now installs a private, never-changing Python), then remove the old
+`python` entries in **Input Monitoring** and **Accessibility** and re-add
+`~/.groq-dictate/venv/bin/python` as the installer instructs.
 
 **It says `(no audio captured)`.**
 The recording was too short or the mic wasn't allowed. Hold the key a moment
