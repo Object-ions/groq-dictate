@@ -14,6 +14,9 @@ __pycache__/
 venv/
 .uv/
 
+# Local video production files (storyboard, footage) — not part of the tool
+video/
+
 # macOS
 .DS_Store
 .AppleDouble
